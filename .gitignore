@@ -6,6 +6,9 @@ bin-release/
 
 # Other files and folders
 .settings/
+.vs
+.vscode
+AppPackages
 
 # Executables
 *.swf
