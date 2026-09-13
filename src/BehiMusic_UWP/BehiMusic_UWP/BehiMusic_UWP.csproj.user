@@ -17,5 +17,9 @@
     <AppIconSource>C:\Users\Admin\Desktop\pngtree-tape-cassette-icon-vector-png-image_6679773.png</AppIconSource>
     <SplashScreenSource>C:\Users\Admin\Desktop\pngtree-tape-cassette-icon-vector-png-image_6679773.png</SplashScreenSource>
     <PackageLogoSource>C:\Users\Admin\Desktop\pngtree-tape-cassette-icon-vector-png-image_6679773.png</PackageLogoSource>
+    <AppxPackageIsForStore>False</AppxPackageIsForStore>
+    <AppxShowAllApps>False</AppxShowAllApps>
+    <AppxBuildConfigurationSelection>arm</AppxBuildConfigurationSelection>
+    <PackageOptionalProjectsInIdeBuilds>False</PackageOptionalProjectsInIdeBuilds>
   </PropertyGroup>
 </Project>
