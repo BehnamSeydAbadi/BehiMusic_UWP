@@ -337,6 +337,7 @@ namespace BehiMusic_UWP.Services
             CurrentSong = index >= 0 && index < _queue.Count ? _queue[index] : null;
             if (CurrentSong != null) CurrentSong.IsPlaying = true;
             UpdateSystemDisplay();
+            UpdateLiveTile(CurrentSong);
             EventHandler handler = CurrentSongChanged;
             if (handler != null) handler(this, EventArgs.Empty);
         }
@@ -365,6 +366,12 @@ namespace BehiMusic_UWP.Services
             _systemControls.DisplayUpdater.MusicProperties.Artist = CurrentSong.DisplayArtist;
             _systemControls.DisplayUpdater.MusicProperties.AlbumTitle = CurrentSong.DisplayAlbum;
             _systemControls.DisplayUpdater.Update();
+        }
+
+        private async void UpdateLiveTile(Song song)
+        {
+            try { await LiveTileService.UpdateAsync(song); }
+            catch { }
         }
     }
 }

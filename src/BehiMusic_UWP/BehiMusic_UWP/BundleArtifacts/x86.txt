@@ -1,0 +1,2 @@
+MainPackage=D:\source\repos\BehiMusic_UWP\src\BehiMusic_UWP\BehiMusic_UWP\bin\x86\Debug\BehiMusic_UWP_1.0.1.0_x86_Debug.appx
+SymbolPackage=D:\source\repos\BehiMusic_UWP\src\BehiMusic_UWP\BehiMusic_UWP\AppPackages\BehiMusic_UWP_1.0.1.0_Debug_Test\BehiMusic_UWP_1.0.1.0_x86_Debug.appxsym

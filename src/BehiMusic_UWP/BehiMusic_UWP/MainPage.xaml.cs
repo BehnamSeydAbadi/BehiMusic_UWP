@@ -2,12 +2,16 @@ using BehiMusic_UWP.Models;
 using BehiMusic_UWP.Services;
 using BehiMusic_UWP.ViewModels;
 using System;
+using System.Collections.Generic;
 using Windows.Media.Playback;
+using Windows.Foundation;
 using Windows.UI.Core;
 using Windows.UI.Xaml;
 using Windows.UI.Xaml.Controls;
 using Windows.UI.Xaml.Controls.Primitives;
+using Windows.UI.Xaml.Input;
 using Windows.UI.Xaml.Media;
+using Windows.UI.Xaml.Media.Animation;
 
 namespace BehiMusic_UWP
 {
@@ -18,6 +22,12 @@ namespace BehiMusic_UWP
         private bool _updatingPosition;
         private Song _draggedQueueSong;
         private int _draggedQueueOldIndex = -1;
+        private Storyboard _nowPlayingStoryboard;
+        private bool _draggingNowPlaying;
+        private readonly Stack<int> _pivotHistory = new Stack<int>();
+        private int _lastPivotIndex = -1;
+        private bool _restoringPivotState;
+        private Song _chosenSearchSuggestion;
         public MainViewModel ViewModel { get; } = new MainViewModel();
         public PlaybackService Playback { get { return PlaybackService.Current; } }
         public object Queue { get { return Playback.Queue; } }
@@ -71,7 +81,20 @@ namespace BehiMusic_UWP
             Song chosenSong = args.ChosenSuggestion as Song;
             string query = args.ChosenSuggestion as string ?? args.QueryText;
             ViewModel.SetQuery(query, true);
-            if (chosenSong != null) await Playback.SetQueueAndPlayAsync(ViewModel.Songs, chosenSong);
+            if (chosenSong != null && chosenSong != _chosenSearchSuggestion)
+                await Playback.SetQueueAndPlayAsync(ViewModel.Songs, chosenSong);
+            _chosenSearchSuggestion = null;
+        }
+
+        private async void SearchBox_SuggestionChosen(AutoSuggestBox sender, AutoSuggestBoxSuggestionChosenEventArgs args)
+        {
+            Song song = args.SelectedItem as Song;
+            if (song == null) return;
+
+            _chosenSearchSuggestion = song;
+            sender.Text = song.DisplayTitle;
+            ViewModel.SetQuery(song.DisplayTitle, true);
+            await Playback.SetQueueAndPlayAsync(ViewModel.Songs, song);
         }
 
         private async void SongsList_ItemClick(object sender, ItemClickEventArgs e)
@@ -190,6 +213,16 @@ namespace BehiMusic_UWP
 
         private void LibraryPivot_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
+            int currentIndex = LibraryPivot.SelectedIndex;
+            if (_lastPivotIndex < 0)
+                _lastPivotIndex = currentIndex;
+            else if (currentIndex != _lastPivotIndex)
+            {
+                if (!_restoringPivotState && (_pivotHistory.Count == 0 || _pivotHistory.Peek() != _lastPivotIndex))
+                    _pivotHistory.Push(_lastPivotIndex);
+                _lastPivotIndex = currentIndex;
+            }
+
             Button[] buttons = { HomeNavButton, SongsNavButton, AlbumsNavButton, ArtistsNavButton, MoreNavButton };
             for (int i = 0; i < buttons.Length; i++) if (buttons[i] != null) buttons[i].Opacity = i == LibraryPivot.SelectedIndex ? 1 : 0.52;
         }
@@ -210,13 +243,196 @@ namespace BehiMusic_UWP
             }
         }
 
-        private void OpenNowPlaying_Click(object sender, RoutedEventArgs e) { NowPlayingOverlay.Visibility = Visibility.Visible; }
-        private void CloseNowPlaying_Click(object sender, RoutedEventArgs e) { NowPlayingOverlay.Visibility = Visibility.Collapsed; }
+        private void OpenNowPlaying_Click(object sender, RoutedEventArgs e) { ShowNowPlaying(); }
+        private void CloseNowPlaying_Click(object sender, RoutedEventArgs e) { HideNowPlaying(); }
+
+        private void MiniPlayerBar_Tapped(object sender, TappedRoutedEventArgs e)
+        {
+            if (HasInteractiveParent(e.OriginalSource as DependencyObject, MiniPlayerBar)) return;
+            ShowNowPlaying();
+            e.Handled = true;
+        }
+
+        private static bool HasInteractiveParent(DependencyObject source, DependencyObject boundary)
+        {
+            DependencyObject current = source;
+            while (current != null && current != boundary)
+            {
+                if (current is ButtonBase || current is Slider) return true;
+                current = VisualTreeHelper.GetParent(current);
+            }
+            return false;
+        }
+
+        private void NowPlayingOverlay_ManipulationStarted(object sender, ManipulationStartedRoutedEventArgs e)
+        {
+            if (HasInteractiveParent(e.OriginalSource as DependencyObject, NowPlayingOverlay))
+            {
+                _draggingNowPlaying = false;
+                return;
+            }
+
+            StopNowPlayingAnimation();
+            _draggingNowPlaying = true;
+            e.Handled = true;
+        }
+
+        private void NowPlayingOverlay_ManipulationDelta(object sender, ManipulationDeltaRoutedEventArgs e)
+        {
+            if (!_draggingNowPlaying) return;
+            NowPlayingTransform.Y = Math.Max(0, e.Cumulative.Translation.Y);
+            e.Handled = true;
+        }
+
+        private void NowPlayingOverlay_ManipulationCompleted(object sender, ManipulationCompletedRoutedEventArgs e)
+        {
+            if (!_draggingNowPlaying) return;
+            _draggingNowPlaying = false;
+            double dismissDistance = Math.Min(150, Math.Max(90, RootLayout.ActualHeight * 0.15));
+            bool fastDownwardFlick = e.Velocities.Linear.Y > 0.45;
+            if (NowPlayingTransform.Y >= dismissDistance || fastDownwardFlick)
+                HideNowPlaying();
+            else
+                RestoreNowPlayingPosition();
+            e.Handled = true;
+        }
+
+        private void RestoreNowPlayingPosition()
+        {
+            StopNowPlayingAnimation();
+            _nowPlayingStoryboard = CreateNowPlayingAnimation(NowPlayingTransform.Y, 0, 180, EasingMode.EaseOut);
+            Storyboard restoreStoryboard = _nowPlayingStoryboard;
+            restoreStoryboard.Completed += (animation, args) =>
+            {
+                if (_nowPlayingStoryboard != restoreStoryboard) return;
+                restoreStoryboard.Stop();
+                NowPlayingTransform.Y = 0;
+                _nowPlayingStoryboard = null;
+            };
+            restoreStoryboard.Begin();
+        }
+
+        private void ShowNowPlaying()
+        {
+            StopNowPlayingAnimation();
+            double sourceY = GetMiniPlayerTop();
+            NowPlayingTransform.Y = sourceY;
+            NowPlayingOverlay.Opacity = 1;
+            NowPlayingOverlay.IsHitTestVisible = true;
+            NowPlayingOverlay.Visibility = Visibility.Visible;
+
+            _nowPlayingStoryboard = CreateNowPlayingAnimation(sourceY, 0, 300, EasingMode.EaseOut);
+            Storyboard openingStoryboard = _nowPlayingStoryboard;
+            openingStoryboard.Completed += (animation, args) =>
+            {
+                if (_nowPlayingStoryboard != openingStoryboard) return;
+                openingStoryboard.Stop();
+                NowPlayingTransform.Y = 0;
+                _nowPlayingStoryboard = null;
+            };
+            openingStoryboard.Begin();
+        }
+
+        private void HideNowPlaying()
+        {
+            if (NowPlayingOverlay.Visibility != Visibility.Visible) return;
+            StopNowPlayingAnimation();
+            NowPlayingOverlay.IsHitTestVisible = false;
+            _nowPlayingStoryboard = CreateNowPlayingAnimation(NowPlayingTransform.Y, GetMiniPlayerTop(), 250, EasingMode.EaseIn);
+            Storyboard closingStoryboard = _nowPlayingStoryboard;
+            closingStoryboard.Completed += (animation, args) =>
+            {
+                if (_nowPlayingStoryboard != closingStoryboard) return;
+                closingStoryboard.Stop();
+                NowPlayingOverlay.Visibility = Visibility.Collapsed;
+                NowPlayingOverlay.IsHitTestVisible = true;
+                NowPlayingTransform.Y = 0;
+                _nowPlayingStoryboard = null;
+            };
+            closingStoryboard.Begin();
+        }
+
+        private Storyboard CreateNowPlayingAnimation(double from, double to, int durationMilliseconds, EasingMode easingMode)
+        {
+            DoubleAnimation slide = new DoubleAnimation
+            {
+                From = from,
+                To = to,
+                Duration = TimeSpan.FromMilliseconds(durationMilliseconds),
+                EasingFunction = new CubicEase { EasingMode = easingMode },
+                EnableDependentAnimation = true
+            };
+            Storyboard.SetTarget(slide, NowPlayingTransform);
+            Storyboard.SetTargetProperty(slide, "Y");
+            Storyboard storyboard = new Storyboard();
+            storyboard.Children.Add(slide);
+            return storyboard;
+        }
+
+        private double GetMiniPlayerTop()
+        {
+            try
+            {
+                Point topLeft = MiniPlayerBar.TransformToVisual(RootLayout).TransformPoint(new Point());
+                if (topLeft.Y > 0) return topLeft.Y;
+            }
+            catch { }
+            return Math.Max(120, RootLayout.ActualHeight - 140);
+        }
+
+        private void StopNowPlayingAnimation()
+        {
+            if (_nowPlayingStoryboard == null) return;
+            double currentY = NowPlayingTransform.Y;
+            _nowPlayingStoryboard.Stop();
+            NowPlayingTransform.Y = currentY;
+            _nowPlayingStoryboard = null;
+        }
 
         private void MainPage_BackRequested(object sender, BackRequestedEventArgs e)
         {
-            if (NowPlayingOverlay.Visibility == Visibility.Visible) { NowPlayingOverlay.Visibility = Visibility.Collapsed; e.Handled = true; }
-            else if (QueueSplitView.IsPaneOpen) { QueueSplitView.IsPaneOpen = false; NowPlayingOverlay.Visibility = Visibility.Visible; e.Handled = true; }
+            if (NowPlayingOverlay.Visibility == Visibility.Visible)
+            {
+                HideNowPlaying();
+                e.Handled = true;
+                return;
+            }
+
+            if (QueueSplitView.IsPaneOpen)
+            {
+                QueueSplitView.IsPaneOpen = false;
+                NowPlayingOverlay.Visibility = Visibility.Visible;
+                e.Handled = true;
+                return;
+            }
+
+            if (!string.IsNullOrWhiteSpace(SearchBox.Text))
+            {
+                SearchBox.Text = string.Empty;
+                ViewModel.SetQuery(string.Empty, false);
+                e.Handled = true;
+                return;
+            }
+
+            if (_pivotHistory.Count > 0)
+            {
+                RestorePivotState(_pivotHistory.Pop());
+                e.Handled = true;
+                return;
+            }
+
+            if (LibraryPivot.SelectedIndex != 0)
+            {
+                RestorePivotState(0);
+                e.Handled = true;
+            }
+        }
+
+        private void RestorePivotState(int index)
+        {
+            _restoringPivotState = true;
+            LibraryPivot.SelectedIndex = index;
+            _restoringPivotState = false;
         }
 
         private void PositionTimer_Tick(object sender, object e)
